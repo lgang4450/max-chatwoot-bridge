@@ -1,29 +1,53 @@
-name: CI
-
+name: CI and immutable image
 on:
   push:
-    branches: [ "master", "main" ]
+    branches: [staging, master]
   pull_request:
-    branches: [ "master", "main" ]
-
+permissions:
+  contents: read
+concurrency:
+  group: max-bridge-${{ github.ref }}
+  cancel-in-progress: false
 jobs:
-  build:
+  verify:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        node-version: [18.x]
-
+    services:
+      redis:
+        image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
+        ports: [6379:6379]
+        options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 5
     steps:
-    - uses: actions/checkout@v3
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v3
-      with:
-        node-version: ${{ matrix.node-version }}
-        cache: 'npm'
-    
-    - name: Install dependencies
-      run: npm ci
-
-    - name: Build TypeScript
-      run: npx tsc
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with: {node-version: '24.15.0', cache: npm}
+      - run: npm ci --ignore-scripts
+      - run: npm test
+        env: {REDIS_TEST_URL: 'redis://127.0.0.1:6379'}
+      - run: npm audit --omit=dev --audit-level=high
+      - run: docker compose --env-file .env.example config --quiet
+  image:
+    needs: verify
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    runs-on: ubuntu-latest
+    permissions: {contents: write}
+    steps:
+      - uses: actions/checkout@v6
+      - name: Build, smoke test and publish immutable image archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          image="max-chatwoot-bridge:$GITHUB_SHA"
+          docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$image" .
+          docker network create max-smoke
+          docker run -d --name max-smoke-redis --network max-smoke --network-alias redis redis:7.4.12-alpine
+          docker run -d --name max-smoke-bridge --network max-smoke -e BRIDGE_ENABLED=false "$image"
+          for i in $(seq 1 30); do
+            if docker exec max-smoke-bridge node -e "fetch('http://localhost:3000/health').then(async r=>{const b=await r.json();process.exit(r.status===200&&b.mode==='prepared'?0:1)}).catch(()=>process.exit(1))"; then break; fi
+            test "$i" -lt 30
+            sleep 2
+          done
+          docker exec max-smoke-bridge node -e "fetch('http://localhost:3000/ready').then(r=>process.exit(r.status===503?0:1))"
+          docker save "$image" | gzip > image.tar.gz
+          sha256sum image.tar.gz > SHA256SUMS
+          gh release create "build-$GITHUB_SHA" image.tar.gz SHA256SUMS --target "$GITHUB_SHA" --prerelease --title "TEST image $GITHUB_SHA" --notes 'CI-verified Linux amd64 image. Verify SHA256SUMS before docker load. Activate only with a moderated MAX bot.'

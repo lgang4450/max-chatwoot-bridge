@@ -1,84 +1,62 @@
-# Интеграция MAX ↔ Chatwoot (Middleware)
+# MAX ↔ Chatwoot Bridge
 
-Это Middleware-приложение (на Node.js + TypeScript), связывающее мессенджер MAX с Chatwoot.
-Оно использует официальную библиотеку `@maxhub/max-bot-api` и реализует защиту от дубликатов сообщений (Idempotency), ограничение скорости запросов к MAX (Rate Limiter 30 RPS) и проксирование вложений.
+Webhook bridge for one official MAX support bot and one Chatwoot API inbox.
+Fork of [HoroshoVse/max-chatwoot-middleware](https://github.com/HoroshoVse/max-chatwoot-middleware).
+ISC license; upstream history/attribution are preserved in [UPSTREAM.md](UPSTREAM.md).
 
-## Архитектура
-1. **MAX Webhook** `POST /max-webhook` -> `chatwoot-inbound` (Queue) -> Chatwoot API (создание Contact, Conversation, Message)
-2. **Chatwoot Webhook** `POST /chatwoot-webhook` -> `max-outbound` (Queue, Rate limited) -> MAX API (сообщение пользователю)
-
-## Требования
-- Docker & Docker Compose
-- Nginx (с настроенным SSL/TLS, например Let's Encrypt). MAX поддерживает webhooks только через HTTPS!
-
----
-
-## 🛠 Подробная инструкция по запуску и настройке
-
-### Шаг 1. Клонирование репозитория
-Склонируйте репозиторий на ваш сервер:
-```bash
-git clone git@github.com:HoroshoVse/max-chatwoot-middleware.git
-cd max-chatwoot-middleware
-cp .env.example .env
+```
+MAX message_created → authenticated HTTPS webhook → Redis queue → Chatwoot incoming
+Chatwoot public reply → timestamp/body HMAC webhook → Redis queue → MAX Bot API
 ```
 
-### Шаг 2. Настройка файла `.env` (Где взять все данные)
-Откройте файл `.env` (например, через `nano .env`) и заполните его по этой инструкции:
+No polling or personal-account sessions. Private dialogs only. Each user is mapped
+by `max:<bot_id>:<user_id>`; email/phone/name are not identity proofs and do not
+merge accounts. A scoped service agent must be a member of the selected API inbox.
 
-#### MAX Конфигурация
-* **`MAX_BOT_TOKEN`**: Токен вашего бота в мессенджере MAX. Его выдает платформа MAX при регистрации бота (в бизнес-профиле ИП/Юрлица).
+## Delivery behavior
 
-#### Chatwoot Конфигурация
-* **`CHATWOOT_BASE_URL`**: Полный адрес вашего сервера Chatwoot. Например: `https://chatwoot.mydomain.com`. Без слэша на конце!
-* **`CHATWOOT_ACCOUNT_ID`**: ID вашего аккаунта в Chatwoot.
-  * *Где взять:* Зайдите в Chatwoot. Посмотрите в адресную строку браузера. Вы увидите что-то вроде `.../app/accounts/1/dashboard`. В данном случае **1** — это ваш Account ID.
-* **`CHATWOOT_INBOX_ID`**: ID вашего канала (Inbox).
-  * *Как создать API Channel:* В Chatwoot перейдите в **Настройки (Settings)** -> **Входящие (Inboxes)** -> **Добавить (Add Inbox)** -> Выберите тип **API Channel**. Задайте ему имя.
-  * *Где взять ID:* После создания канала перейдите в его настройки. Посмотрите в адресную строку браузера: `.../app/accounts/1/settings/inboxes/42`. В данном случае **42** — это ваш Inbox ID.
-* **`CHATWOOT_API_TOKEN`**: Токен доступа к API Chatwoot (чтобы программа могла отправлять сообщения от имени бота/агента).
-  * *Где взять:* В самом низу левого меню Chatwoot нажмите на свою аватарку -> **Настройки профиля (Profile Settings)**. Прокрутите страницу в самый низ до раздела **Access Token**. Скопируйте строку.
-* **`CHATWOOT_WEBHOOK_SECRET`**: Секретный ключ для проверки подлинности вебхуков.
-  * *Где взять:* В Chatwoot перейдите в **Настройки (Settings)** -> **Webhooks** -> **Добавить Webhook**. 
-  * В качестве ссылки укажите адрес, где будет работать это приложение: `https://middleware.yourdomain.com/chatwoot-webhook`. 
-  * Выберите события **Message Created** (Создано сообщение). 
-  * Сохраните. После этого в списке вебхуков появится токен — это и есть ваш Secret.
+- MAX shared-secret header and native Chatwoot `X-Chatwoot-Signature` HMAC over
+  `timestamp.rawBody`, with a five-minute timestamp window; account/inbox/private filters.
+- Redis BullMQ: AOF `appendfsync always`, no eviction, one worker per direction,
+  six attempts with backoff, queue capacity/backpressure, retained failed jobs.
+- Incoming receipts are marked only after Chatwoot delivery. Retries reconcile by
+  exact source_id, recovering contacts and canonical contact_inbox source_id.
+- Outgoing confirmed receipts suppress duplicates. A definitive 429 is retryable.
+  Timeout/crash/ambiguous acknowledgement is parked for operator reconciliation,
+  rather than automatically resending a potentially accepted answer. A private
+  operator note is attempted on permanent outgoing failure.
+- TLS verification stays enabled. Public CA certificates are byte-pinned.
+  Media downloads require HTTPS, allowed origins/hosts, public pinned IPv4 DNS,
+  bounded redirects, finite timeout and size. Text/photos/files supported; incoming
+  audio/video with direct URLs are forwarded. Outgoing non-image media are uploaded
+  as files. Unsupported/token-only MAX media appear as an explicit incoming marker.
+- Logs contain controlled event names only, never payloads, credentials, URLs or
+  raw exception objects. Webhook payloads/attachments are personal data in storage.
 
-*(Примечание: `REDIS_URL` и `PORT` в файле `.env` менять не нужно, если вы используете стандартный docker-compose).*
+Limits: webhook 64 KiB, MAX reply 4000 UTF-16 code units, ten attachments,
+10 MiB per outbound file / aggregate incoming files. Limits deliberately fail
+closed. Complete/failed jobs retained 7/30 days (max 1000 each); delivery receipts
+30 days. No exactly-once guarantee: a simultaneous failure before persisting a
+remote acknowledgement still requires reconciliation. One active replica only.
 
----
+## Build and verify
 
-### Шаг 3. Запуск приложения (Docker)
-Когда файл `.env` заполнен, выполните команду для запуска:
-```bash
-docker-compose up -d --build
-```
-Приложение запустится на порту `3000`.
+Node 24.15+, npm lockfile required:
 
----
-
-### Шаг 4. Настройка Nginx и HTTPS
-MAX API **требует** использования HTTPS для вебхуков. 
-1. В репозитории есть пример файла `nginx.conf`. Скопируйте его настройки в вашу конфигурацию Nginx (обычно в `/etc/nginx/sites-available/middleware`).
-2. Запросите бесплатный SSL сертификат:
-   ```bash
-   sudo certbot --nginx -d middleware.yourdomain.com
-   ```
-
----
-
-### Шаг 5. Регистрация Webhook в MAX
-Чтобы MAX начал присылать сообщения пользователей в ваше Middleware, вам нужно сказать MAX, куда их отправлять.
-Выполните этот CURL запрос из командной строки на вашем компьютере или сервере (замените капс на свои данные):
-
-```bash
-curl -k -X POST https://platform-api2.max.ru/subscriptions \
-  -H "Authorization: Bearer ВАШ_MAX_BOT_TOKEN_СЮДА" \
-  -H "Content-Type: application/json" \
-  -d '{
-        "url": "https://middleware.yourdomain.com/max-webhook",
-        "update_types": ["message_created"]
-      }'
+```sh
+npm ci --ignore-scripts
+npm test
+npm audit --omit=dev --audit-level=high
 ```
 
-🎉 **Готово!** Теперь, если кто-то напишет боту в MAX, сообщение попадет в Chatwoot (в API Channel), а ответ оператора вернется пользователю в MAX.
+Set REDIS_TEST_URL to a disposable Redis for the queue reconnect/retry check.
+CI runs this integration check with real Redis, builds the image and smoke-tests
+prepared mode. Push to `staging` publishes a public prerelease `build-<git-sha>`
+with image.tar.gz and SHA256SUMS. The image tag and OCI revision equal that SHA.
+
+## Deploy
+
+See [deployment and recovery](docs/DEPLOYMENT.md). Start with BRIDGE_ENABLED=false:
+health reports **prepared**, readiness is **503**, webhooks reject all messages.
+This is preparation, not an active MAX integration. Enable only with a moderated
+bot, private credentials, a configured API inbox and authenticated HTTPS routes.

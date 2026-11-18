@@ -1,29 +1,43 @@
-version: '3.8'
-
+name: max-chatwoot-bridge
 services:
-  middleware:
-    build: .
+  bridge:
+    image: ${BRIDGE_IMAGE:?Set immutable CI image}
+    env_file: .env
     restart: unless-stopped
-    ports:
-      - "3001:3000"
-    environment:
-      - PORT=3000
-      - MAX_BOT_TOKEN=${MAX_BOT_TOKEN}
-      - CHATWOOT_BASE_URL=${CHATWOOT_BASE_URL}
-      - CHATWOOT_API_TOKEN=${CHATWOOT_API_TOKEN}
-      - CHATWOOT_ACCOUNT_ID=${CHATWOOT_ACCOUNT_ID}
-      - CHATWOOT_INBOX_ID=${CHATWOOT_INBOX_ID}
-      - CHATWOOT_WEBHOOK_SECRET=${CHATWOOT_WEBHOOK_SECRET}
-      - REDIS_URL=redis://redis:6379
-      - NODE_TLS_REJECT_UNAUTHORIZED=0
+    read_only: true
+    user: "1000:1000"
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    ports: ["127.0.0.1:${BRIDGE_HTTP_PORT:-9091}:3000"]
+    networks: [queue, egress]
     depends_on:
-      - redis
-
+      redis: {condition: service_healthy}
+    mem_limit: 384m
+    cpus: 0.5
+    stop_grace_period: 90s
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health',{signal:AbortSignal.timeout(3000)}).then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 3
+    logging: &logs
+      driver: json-file
+      options: {max-size: 5m, max-file: "3"}
   redis:
-    image: redis:7-alpine
+    image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     restart: unless-stopped
-    volumes:
-      - redis_data:/data
-
-volumes:
-  redis_data:
+    command: [redis-server, --appendonly, "yes", --appendfsync, always, --maxmemory, 384mb, --maxmemory-policy, noeviction]
+    volumes: ["${BRIDGE_DATA_ROOT:-./data}/redis:/data"]
+    networks: [queue]
+    mem_limit: 512m
+    cpus: 0.5
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    logging: *logs
+networks:
+  queue: {internal: true}
+  egress: {driver: bridge}

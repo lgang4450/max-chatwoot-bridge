@@ -1,59 +1,39 @@
-import express from 'express';
-import { Bot } from '@maxhub/max-bot-api';
-import { config } from './config';
-import { chatwootInboundQueue, maxOutboundQueue } from './queues';
-
-const app = express();
-app.use(express.json());
-
-const bot = new Bot(config.maxBotToken);
-
-// === MAX Webhook Endpoint ===
-// Instead of processing synchronously, we queue it
-// If we want to use the bot instance for parsing, we can intercept or just queue the raw payload
-app.post('/max-webhook', async (req, res) => {
-  try {
-    const payload = req.body;
-    console.log("=== INCOMING MAX WEBHOOK ===");
-    console.log(JSON.stringify(payload, null, 2));
-
-    // For debugging, we add everything to the queue so we can see what happens in maxWebhook.ts
-    await chatwootInboundQueue.add('max-message', { ctxPayload: payload });
-    
-    res.status(200).send('OK');
-  } catch (err) {
-    console.error('Error handling MAX webhook', err);
-    res.status(500).send('Internal Error');
-  }
-});
-
-// === Chatwoot Webhook Endpoint ===
-app.post('/chatwoot-webhook', async (req, res) => {
-  try {
-    const payload = req.body;
-    
-    // Process chatwoot webhooks (outgoing and template messages)
-    if (payload.event === 'message_created') {
-      if (payload.message_type === 'outgoing' || payload.message_type === 'template') {
-        console.log(`=== INCOMING CHATWOOT WEBHOOK (${payload.message_type.toUpperCase()} MESSAGE) ===`);
-        console.log(JSON.stringify(payload, null, 2));
-        await maxOutboundQueue.add('chatwoot-message', { webhookPayload: payload });
-      }
+import { Redis } from 'ioredis';
+import { Queue,Worker } from 'bullmq';
+import { loadConfig } from './config.js';
+import { createApp } from './app.js';
+import { Bridge } from './bridge.js';
+import { report } from './security.js';
+async function main() {
+  const cfg=loadConfig();
+  const redis=new Redis(cfg.redisUrl,{maxRetriesPerRequest:1,connectTimeout:3000});redis.on('error',()=>report('redis_unavailable'));
+  await redis.ping();
+  const workers:Worker[]=[];const queues:Queue[]=[];
+  if(cfg.enabled) {
+    const bridge=new Bridge(cfg,redis);await bridge.validate();
+    for(const direction of ['in','out'] as const) {
+      const queue=new Queue('max-bridge-'+direction,{connection:{url:cfg.redisUrl,maxRetriesPerRequest:1},defaultJobOptions:{attempts:6,backoff:{type:'exponential',delay:3000},removeOnComplete:{age:7*86400,count:1000},removeOnFail:{age:30*86400,count:1000}}});
+      queues.push(queue);
+      const worker=new Worker(queue.name,async job=>direction==='in'?bridge.incoming(job.data):bridge.outgoing(job.data),{connection:{url:cfg.redisUrl},concurrency:1,limiter:{max:5,duration:1000}});
+      worker.on('error',()=>report('worker_unavailable'));
+      worker.on('failed',async(job)=>{
+        report('job_failed');
+        if(direction==='out' && job && (await job.getState())==='failed') {
+          try {await bridge.cw.note(job.data.conversation.id,'Ответ в MAX не подтверждён. Требуется проверка доставки; автоматическая повторная отправка остановлена.');}catch {report('operator_notice_failed');}
+        }
+      });
+      workers.push(worker);
     }
-    
-    res.status(200).send('OK');
-  } catch (err) {
-    console.error('Error handling Chatwoot webhook', err);
-    res.status(500).send('Internal Error');
   }
-});
-
-// === Healthcheck ===
-app.get('/health', (req, res) => {
-  res.status(200).json({ status: 'ok', time: new Date() });
-});
-
-app.listen(config.port, () => {
-  console.log(`Middleware listening on port ${config.port}`);
-  console.log(`Make sure to register the webhook with MAX: POST https://platform-api2.max.ru/subscriptions`);
-});
+  const app=createApp(cfg,async(direction,id,payload)=>{
+    const queue=queues[direction==='in'?0:1];
+    if(await queue.getWaitingCount()+await queue.getDelayedCount()>=cfg.maxQueue) throw new Error('Queue capacity');
+    await queue.add('message',payload,{jobId:direction+'-'+id});
+  },async()=>{await redis.ping();return Promise.all(queues.map(q=>q.getJobCounts('waiting','active','delayed','failed')));});
+  const server=app.listen(cfg.port,'0.0.0.0',()=>report(cfg.enabled?'bridge_active':'bridge_prepared'));
+  server.requestTimeout=10000;server.headersTimeout=10000;
+  let stopping=false;
+  const shutdown=async()=>{if(stopping)return;stopping=true;server.close();await Promise.all(workers.map(w=>w.close()));await Promise.all(queues.map(q=>q.close()));await redis.quit();};
+  process.on('SIGTERM',()=>void shutdown());process.on('SIGINT',()=>void shutdown());
+}
+main().catch(()=>{report('startup_failed');process.exit(1);});
