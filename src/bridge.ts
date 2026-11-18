@@ -3,7 +3,7 @@ import { UnrecoverableError } from 'bullmq';
 import type { Config } from './config.js';
 import type { Redis } from 'ioredis';
 import { Chatwoot } from './chatwoot.js';
-import { HttpFailure, download } from './http.js';
+import { HttpFailure, download, downloadChatwoot } from './http.js';
 import { inbound, digest } from './security.js';
 export class Bridge {
   readonly cw:Chatwoot;readonly bot:Bot;
@@ -59,7 +59,7 @@ export class Bridge {
     const attachments:any[]=[];
     if((payload.attachments||[]).length>10) throw new UnrecoverableError('Attachment count limit');
     for(const a of payload.attachments||[]) {
-      const f=await download(a.data_url,{origin:this.cfg.mediaOrigin},this.cfg.maxBytes);
+      const f=await downloadChatwoot(a.data_url,this.cfg.mediaOrigin,this.cfg.cwUrl,this.cfg.maxBytes);
       // The SDK receives a bounded buffer, never an arbitrary download URL.
       const upload=a.file_type==='image'?await this.bot.api.uploadImage({source:f.data,timeout:20000}):await this.bot.api.uploadFile({source:f.data,timeout:20000});
       attachments.push(upload);

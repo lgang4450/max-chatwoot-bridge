@@ -29,7 +29,10 @@ merge accounts. A scoped service agent must be a member of the selected API inbo
   operator note is attempted on permanent outgoing failure.
 - TLS verification stays enabled. Public CA certificates are byte-pinned.
   Media downloads require HTTPS, allowed origins/hosts, public pinned IPv4 DNS,
-  bounded redirects, finite timeout and size. Text/photos/files supported; incoming
+  bounded redirects, finite timeout and size. Signed Chatwoot ActiveStorage paths
+  are fetched from the configured internal Chatwoot service, bypassing staff
+  Basic Auth without exposing files publicly. Other internal URL paths are rejected.
+  Text/photos/files supported; incoming
   audio/video with direct URLs are forwarded. Outgoing non-image media are uploaded
   as files. Unsupported/token-only MAX media appear as an explicit incoming marker.
 - Logs contain controlled event names only, never payloads, credentials, URLs or

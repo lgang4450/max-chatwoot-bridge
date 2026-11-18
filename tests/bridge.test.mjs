@@ -81,3 +81,19 @@ test('contact link reuses canonical source ID supplied by Chatwoot',async()=>{
   };
   const contact=await cw.contact('71','fixture');await cw.conversation(contact);assert.equal(created.source_id,'canonical-link');assert.equal(created.contact_id,9);
 });
+test('staff-protected ActiveStorage is fetched only from configured Chatwoot and bounded on redirects',async()=>{
+  const {createServer}=await import('node:http');const {downloadChatwoot}=await import('../dist/http.js');
+  let externalRedirect=false;
+  const server=createServer((req,res)=>{
+    assert.equal(req.headers['x-forwarded-host'],'support.example.com');assert.equal(req.headers['x-forwarded-proto'],'https');
+    if(req.url.includes('/blobs/')) {res.writeHead(302,{Location:externalRedirect?'https://evil.example/secret':'https://support.example.com/rails/active_storage/disk/signed/file.txt'});res.end();}
+    else {res.writeHead(200,{'Content-Type':'text/plain'});res.end('fixture attachment');}
+  }).listen(0,'127.0.0.1');await once(server,'listening');
+  try {
+    const internal='http://127.0.0.1:'+server.address().port,publicOrigin='https://support.example.com',url=publicOrigin+'/rails/active_storage/blobs/redirect/signed/file.txt';
+    const f=await downloadChatwoot(url,publicOrigin,internal,100);assert.equal(f.data.toString(),'fixture attachment');
+    await assert.rejects(()=>downloadChatwoot(url,publicOrigin,internal,2));
+    await assert.rejects(()=>downloadChatwoot(publicOrigin+'/admin',publicOrigin,internal,100));
+    externalRedirect=true;await assert.rejects(()=>downloadChatwoot(url,publicOrigin,internal,100));
+  } finally {await new Promise(r=>server.close(r));}
+});

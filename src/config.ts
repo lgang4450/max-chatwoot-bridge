@@ -22,6 +22,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env) {
   const cw = new URL(cfg.cwUrl), media = new URL(cfg.mediaOrigin);
   if (!['http:', 'https:'].includes(cw.protocol) || cw.username || cw.password || cw.search || cw.hash || cw.pathname !== '/') throw new Error('Invalid Chatwoot origin');
   if (media.protocol !== 'https:' || media.username || media.password || media.pathname !== '/') throw new Error('Invalid media origin');
+  cfg.cwUrl=cw.origin;cfg.mediaOrigin=media.origin;
   if (enabled && (!cfg.maxToken || !cfg.cwToken || cfg.maxSecret.length < 32 || cfg.cwSecret.length < 24 || !/^\d+$/.test(cfg.maxBotId))) throw new Error('Missing enabled bridge credentials/identity');
   return cfg;
 }

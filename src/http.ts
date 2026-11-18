@@ -32,3 +32,26 @@ export async function download(raw: string, policy: {origin?:string;hosts?:strin
   }
   throw new HttpFailure();
 }
+
+// Signed ActiveStorage links may be behind staff Basic Auth at the public edge.
+// Rewrite only this path namespace to the operator-configured Chatwoot origin.
+// Private-address access is limited to that single trusted service, not payload URLs.
+export async function downloadChatwoot(raw:string,publicOrigin:string,internalOrigin:string,maxBytes:number) {
+  let path=allowedMediaUrl(raw,{origin:publicOrigin});
+  const local=new URL(internalOrigin);
+  for(let redirects=0;redirects<=3;redirects++) {
+    if(!path.pathname.startsWith('/rails/active_storage/')) throw new HttpFailure();
+    const target=new URL(path.pathname+path.search,local);
+    const response=await fetch(target,{redirect:'manual',headers:{'X-Forwarded-Host':new URL(publicOrigin).host,'X-Forwarded-Proto':'https'},signal:AbortSignal.timeout(20000)});
+    if([301,302,303,307,308].includes(response.status)) {
+      const location=response.headers.get('location');await response.body?.cancel();
+      if(!location) throw new HttpFailure();
+      path=allowedMediaUrl(new URL(location,path).href,{origin:publicOrigin});continue;
+    }
+    if(!response.ok || Number(response.headers.get('content-length')||0)>maxBytes) {await response.body?.cancel();throw new HttpFailure(response.status);}
+    const chunks:Buffer[]=[];let total=0;
+    for await(const chunk of response.body!) {total+=chunk.length;if(total>maxBytes)throw new HttpFailure();chunks.push(Buffer.from(chunk));}
+    return {data:Buffer.concat(chunks),type:response.headers.get('content-type')||'application/octet-stream'};
+  }
+  throw new HttpFailure();
+}
