@@ -24,7 +24,7 @@ jobs:
       - run: npm test
         env: {REDIS_TEST_URL: 'redis://127.0.0.1:6379'}
       - run: npm audit --omit=dev --audit-level=high
-      - run: docker compose --env-file .env.example config --quiet
+      - run: cp .env.example .env && docker compose --env-file .env.example config --quiet
   image:
     needs: verify
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
@@ -51,3 +51,23 @@ jobs:
           docker save "$image" | gzip > image.tar.gz
           sha256sum image.tar.gz > SHA256SUMS
           gh release create "build-$GITHUB_SHA" image.tar.gz SHA256SUMS --target "$GITHUB_SHA" --prerelease --title "TEST image $GITHUB_SHA" --notes 'CI-verified Linux amd64 image. Verify SHA256SUMS before docker load. Activate only with a moderated MAX bot.'
+
+  deploy_stand:
+    needs: image
+    if: github.ref == 'refs/heads/staging' && vars.STAND_DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Deploy exact CI release through restricted SSH key
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.STAND_DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.STAND_DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ secrets.STAND_DEPLOY_HOST }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/id_ed25519
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/id_ed25519 ~/.ssh/known_hosts
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=3 "developer@$DEPLOY_HOST" "$GITHUB_SHA"

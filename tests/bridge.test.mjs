@@ -13,6 +13,7 @@ const reply=()=>({event:'message_created',message_type:'outgoing',private:false,
 class Store {values=new Map();async get(k){return this.values.get(k)||null}async set(k,v){this.values.set(k,v);return 'OK'}}
 test('required credentials and TLS verification fail closed',()=>{
   assert.throws(()=>loadConfig({BRIDGE_ENABLED:'true'}));assert.throws(()=>loadConfig({NODE_TLS_REJECT_UNAUTHORIZED:'0'}));assert.equal(loadConfig({}).enabled,false);
+  assert.equal(loadConfig({...process.env,BRIDGE_ENABLED:'true',MAX_BOT_TOKEN:'fixture',MAX_BOT_ID:'123',MAX_WEBHOOK_SECRET:'m'.repeat(32),CHATWOOT_API_TOKEN:'fixture',CHATWOOT_WEBHOOK_SECRET:'c'.repeat(24)}).enabled,true);
 });
 test('standard MAX sender fields preserve distinct users; skip bots/groups',()=>{
   assert.equal(inbound(update(71)).id,'71');assert.equal(inbound(update(72)).id,'72');

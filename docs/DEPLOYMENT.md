@@ -78,3 +78,14 @@ Stopping an active bridge requires alerting the support team because MAX retains
 undelivered webhook events for a limited time. Do not delete bot subscriptions with
 pending events during ordinary upgrade or rollback. Restore prepared mode only
 when intentionally pausing activation; it returns503 rather than acknowledging loss.
+
+## Optional automatic TEST deployment
+
+The CI deploy_stand job is opt-in via repository variable STAND_DEPLOY_ENABLED.
+It requires STAND_DEPLOY_SSH_KEY, STAND_DEPLOY_HOST and STAND_DEPLOY_KNOWN_HOSTS
+in GitHub Secrets. Use a dedicated restricted key (forced command accepting only
+one validated full Git SHA, no PTY/forwarding) and an administrator-installed
+operator that downloads only this repository's checksum-verified CI release.
+Never reuse a general operator SSH key. Keep the variable unset/false until
+credential transfer to that exact repository is authorized. CI image publication
+works without these secrets and permits operator deployment of the same artifact.
