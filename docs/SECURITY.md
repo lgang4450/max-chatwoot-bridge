@@ -52,8 +52,11 @@ physical erasure of historical disk blocks. Chatwoot conversation history follow
 its own policy; this policy concerns copies held by the bridge.
 
 Root-only deployment snapshots contain secrets/data. The infrastructure timer
-expires RDB/SQLite snapshot payloads7 days after snapshot creation independently
-of deployments (hourly sweep); rollback image/config metadata are retained.
+expires RDB/SQLite snapshot payloads AND copied environment secrets7 days after
+snapshot creation independently of deployments (hourly sweep); only non-secret
+Compose/release metadata are retained. Exact one-off MAX migration snapshots have
+the same expiry. The pre-MAX full Chatwoot dump has its own Chatwoot-owned7-day
+policy targeting only that named dump, without pruning unrelated backups.
 Thus a snapshot can retain older queue content beyond the online retention window.
 Central Chatwoot backups have their own infrastructure policy. Off-host production
 backup/monitoring is a separate prerequisite; the current stand is not activated.
