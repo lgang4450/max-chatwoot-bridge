@@ -7,9 +7,14 @@ import { HttpFailure, download } from './http.js';
 import { inbound, digest } from './security.js';
 export class Bridge {
   readonly cw:Chatwoot;readonly bot:Bot;
+  private nextApiAt=0;
   constructor(readonly cfg:Config,readonly redis:Redis) {
     this.cw=new Chatwoot(cfg);
-    this.bot=new Bot(cfg.maxToken,{clientOptions:{baseUrl:'https://platform-api2.max.ru',fetch:(input,init)=>fetch(input,{...init,redirect:'error',signal:AbortSignal.timeout(15000)})}});
+    this.bot=new Bot(cfg.maxToken,{clientOptions:{baseUrl:'https://platform-api2.max.ru',fetch:async(input,init)=>{
+      const now=Date.now(),wait=Math.max(0,this.nextApiAt-now);this.nextApiAt=Math.max(now,this.nextApiAt)+100;
+      if(wait) await new Promise(r=>setTimeout(r,wait));
+      return fetch(input,{...init,redirect:'error',signal:AbortSignal.timeout(15000)});
+    }}});
   }
   async validate() {
     const me=await this.bot.api.getMyInfo();

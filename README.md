@@ -19,6 +19,8 @@ merge accounts. A scoped service agent must be a member of the selected API inbo
   `timestamp.rawBody`, with a five-minute timestamp window; account/inbox/private filters.
 - Redis BullMQ: AOF `appendfsync always`, no eviction, one worker per direction,
   six attempts with backoff, queue capacity/backpressure, retained failed jobs.
+  MAX SDK API calls are paced to ten requests per second per process, including
+  upload URL requests; CDN upload traffic uses the SDK transport.
 - Incoming receipts are marked only after Chatwoot delivery. Retries reconcile by
   exact source_id, recovering contacts and canonical contact_inbox source_id.
 - Outgoing confirmed receipts suppress duplicates. A definitive 429 is retryable.
