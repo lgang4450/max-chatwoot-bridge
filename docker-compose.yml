@@ -1,4 +1,7 @@
 name: max-chatwoot-bridge
+x-logging: &logs
+  driver: json-file
+  options: {max-size: 5m, max-file: "3"}
 services:
   bridge:
     image: ${BRIDGE_IMAGE:?Set immutable CI image}
@@ -10,9 +13,10 @@ services:
     security_opt: [no-new-privileges:true]
     tmpfs: ["/tmp:size=16m,mode=1777"]
     ports: ["127.0.0.1:${BRIDGE_HTTP_PORT:-9091}:3000"]
-    networks: [queue, egress]
+    networks: [queue, egress, rpc]
     depends_on:
       redis: {condition: service_healthy}
+      gateway: {condition: service_healthy}
     mem_limit: 384m
     cpus: 0.5
     stop_grace_period: 90s
@@ -21,9 +25,29 @@ services:
       interval: 20s
       timeout: 5s
       retries: 3
-    logging: &logs
-      driver: json-file
-      options: {max-size: 5m, max-file: "3"}
+    logging: *logs
+  gateway:
+    image: ${BRIDGE_IMAGE:?Set immutable CI image}
+    command: [node, dist/gateway.js]
+    logging: *logs
+    env_file: .gateway.env
+    environment:
+      SERVICE_ROLE: gateway
+      GATEWAY_DB: /data/gateway.sqlite
+    restart: unless-stopped
+    user: "1000:1000"
+    read_only: true
+    volumes: ["${BRIDGE_DATA_ROOT:-./data}/gateway:/data"]
+    networks: [rpc]
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 384m
+    cpus: 0.5
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 20s
+      timeout: 4s
+      retries: 3
   redis:
     image: redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
     restart: unless-stopped
@@ -40,4 +64,8 @@ services:
     logging: *logs
 networks:
   queue: {internal: true}
+  rpc:
+    internal: true
+    ipam:
+      config: [{subnet: "${BRIDGE_RPC_SUBNET:-10.250.231.0/28}"}]
   egress: {driver: bridge}

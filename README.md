@@ -5,22 +5,24 @@ Fork of [HoroshoVse/max-chatwoot-middleware](https://github.com/HoroshoVse/max-c
 ISC license; upstream history/attribution are preserved in [UPSTREAM.md](UPSTREAM.md).
 
 ```
-MAX message_created → authenticated HTTPS webhook → Redis queue → Chatwoot incoming
+MAX message_created → authenticated HTTPS webhook → Redis queue → narrow gateway → Chatwoot incoming
 Chatwoot public reply → timestamp/body HMAC webhook → Redis queue → MAX Bot API
 ```
 
 No polling or personal-account sessions. Private dialogs only. Each user is mapped
 by `max:<bot_id>:<user_id>`; email/phone/name are not identity proofs and do not
-merge accounts. A scoped service agent must be a member of the selected API inbox.
+merge accounts. A dedicated gateway holds the service-agent token and authorizes only the selected
+MAX inbox. Native agent membership does not scope contact APIs. Bridge has no
+Chatwoot token or direct access to its database network. See [security boundaries](docs/SECURITY.md).
 
 ## Delivery behavior
 
 - MAX shared-secret header and native Chatwoot `X-Chatwoot-Signature` HMAC over
   `timestamp.rawBody`, with a five-minute timestamp window; account/inbox/private filters.
-- Redis BullMQ: AOF `appendfsync always`, no eviction, one worker per direction,
+- Redis BullMQ: AOF `appendfsync always`, no eviction, four incoming workers with per-sender serialization and one outgoing worker,
   six attempts with backoff, queue capacity/backpressure, retained failed jobs.
-  MAX SDK API calls are paced to ten requests per second per process, including
-  upload URL requests; CDN upload traffic uses the SDK transport.
+  MAX API calls are paced to ten requests per second per process, including
+  upload URL requests; CDN upload traffic uses the bounded, DNS-pinned transport.
 - Incoming receipts are marked only after Chatwoot delivery. Retries reconcile by
   exact source_id, recovering contacts and canonical contact_inbox source_id.
 - Outgoing confirmed receipts suppress duplicates. A definitive 429 is retryable.
@@ -40,9 +42,9 @@ merge accounts. A scoped service agent must be a member of the selected API inbo
 
 Limits: webhook 64 KiB, MAX reply 4000 UTF-16 code units, ten attachments,
 10 MiB per outbound file / aggregate incoming files. Limits deliberately fail
-closed. Complete/failed jobs retained 7/30 days (max 1000 each); delivery receipts
+closed. Periodic cleanup, independent of new jobs, retains complete/failed jobs 7/30 days (max 1000 each); delivery receipts
 30 days. No exactly-once guarantee: a simultaneous failure before persisting a
-remote acknowledgement still requires reconciliation. One active replica only.
+remote acknowledgement still requires reconciliation. One active bridge/gateway replica only. See SECURITY.md for sweep, AOF and snapshot windows.
 
 ## Build and verify
 

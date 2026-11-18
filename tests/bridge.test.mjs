@@ -6,14 +6,16 @@ import {loadConfig} from '../dist/config.js';
 import {inbound,outgoing,verifyChatwoot,allowedMediaUrl,isPublicAddress} from '../dist/security.js';
 import {createApp} from '../dist/app.js';
 import {Bridge} from '../dist/bridge.js';
-import {Chatwoot} from '../dist/chatwoot.js';
-const cfg=loadConfig({BRIDGE_ENABLED:'true',MAX_BOT_TOKEN:'fixture',MAX_BOT_ID:'123',MAX_WEBHOOK_SECRET:'m'.repeat(40),CHATWOOT_API_TOKEN:'fixture',CHATWOOT_WEBHOOK_SECRET:'c'.repeat(40),CHATWOOT_INBOX_ID:'4'});
+import {Chatwoot} from '../dist/trusted-chatwoot.js';
+import {keyOf,scopeOf} from '../dist/scope.js';
+// import {Chatwoot} from '../dist/chatwoot.js';
+const cfg=loadConfig({BRIDGE_ENABLED:'true',GATEWAY_TOKEN:'g'.repeat(40),MAX_BOT_TOKEN:'fixture',MAX_BOT_ID:'123',MAX_WEBHOOK_SECRET:'m'.repeat(40),CHATWOOT_WEBHOOK_SECRET:'c'.repeat(40),CHATWOOT_INBOX_ID:'4'});
 const update=(id=71)=>({update_type:'message_created',message:{sender:{user_id:id,first_name:'Fixture'},recipient:{chat_type:'dialog',chat_id:50},body:{mid:'message-'+id,text:'fixture'}}});
 const reply=()=>({event:'message_created',message_type:'outgoing',private:false,account:{id:1},inbox:{id:4},id:55,conversation:{id:8},content:'reply'});
 class Store {values=new Map();async get(k){return this.values.get(k)||null}async set(k,v){this.values.set(k,v);return 'OK'}}
 test('required credentials and TLS verification fail closed',()=>{
   assert.throws(()=>loadConfig({BRIDGE_ENABLED:'true'}));assert.throws(()=>loadConfig({NODE_TLS_REJECT_UNAUTHORIZED:'0'}));assert.equal(loadConfig({}).enabled,false);
-  assert.equal(loadConfig({...process.env,BRIDGE_ENABLED:'true',MAX_BOT_TOKEN:'fixture',MAX_BOT_ID:'123',MAX_WEBHOOK_SECRET:'m'.repeat(32),CHATWOOT_API_TOKEN:'fixture',CHATWOOT_WEBHOOK_SECRET:'c'.repeat(24)}).enabled,true);
+  assert.equal(loadConfig({...process.env,BRIDGE_ENABLED:'true',GATEWAY_TOKEN:'g'.repeat(40),MAX_BOT_TOKEN:'fixture',MAX_BOT_ID:'123',MAX_WEBHOOK_SECRET:'m'.repeat(32),CHATWOOT_WEBHOOK_SECRET:'c'.repeat(24)}).enabled,true);
 });
 test('standard MAX sender fields preserve distinct users; skip bots/groups',()=>{
   assert.equal(inbound(update(71)).id,'71');assert.equal(inbound(update(72)).id,'72');
@@ -56,21 +58,21 @@ test('webhook rejects invalid auth, fails when queue unavailable, skips private 
 test('incoming failure is retryable; accepted request is reconciled after receipt loss',async()=>{
   const store=new Store(),bridge=new Bridge(cfg,store);let delivered=false,calls=0;
   bridge.cw.call=async()=>({status:'open'});bridge.cw.contact=async()=>({id:9,source:'canonical'});bridge.cw.conversation=async()=>8;
-  bridge.cw.findMessage=async()=>delivered?99:null;
-  bridge.cw.incoming=async()=>{calls++;delivered=true;throw Error('simulated lost HTTP response')};
+  bridge.cw.check=async()=>({contact_id:9,inbox_id:4});
+  bridge.cw.incoming=async()=>{if(delivered)return 99;calls++;delivered=true;throw Error('simulated lost HTTP response')};
   await assert.rejects(()=>bridge.incoming(update()));assert.equal([...store.values.keys()].some(k=>k.startsWith('received-')),false);
   await bridge.incoming(update());await bridge.incoming(update());assert.equal(calls,1);
 });
 test('MAX outbound ambiguous timeout is parked, not resent; confirmed duplicate skipped',async()=>{
-  const store=new Store();await store.set('recipient-8','71');const bridge=new Bridge(cfg,store);let calls=0;
+  const store=new Store();await store.set(keyOf(cfg,'recipient-8'),'71');const bridge=new Bridge(cfg,store);bridge.cw.check=async()=>({});let calls=0;
   bridge.bot.api.sendMessageToUser=async()=>{calls++;throw Error('simulated timeout')};
-  await assert.rejects(()=>bridge.outgoing(reply()));assert.equal(await store.get('sent-55'),'uncertain');await assert.rejects(()=>bridge.outgoing(reply()));assert.equal(calls,1);
-  await store.set('sent-55','sent:known');await bridge.outgoing(reply());assert.equal(calls,1);
+  await assert.rejects(()=>bridge.outgoing(reply()));assert.equal(await store.get(keyOf(cfg,'sent-55')),'uncertain');await assert.rejects(()=>bridge.outgoing(reply()));assert.equal(calls,1);
+  await store.set(keyOf(cfg,'sent-55'),'sent:known');await bridge.outgoing(reply());assert.equal(calls,1);
 });
 test('MAX 429 remains retryable and success stores a receipt',async()=>{
-  const store=new Store();await store.set('recipient-8','71');const bridge=new Bridge(cfg,store);let calls=0;
+  const store=new Store();await store.set(keyOf(cfg,'recipient-8'),'71');const bridge=new Bridge(cfg,store);bridge.cw.check=async()=>({});let calls=0;
   bridge.bot.api.sendMessageToUser=async()=>{if(++calls===1)throw {status:429};return {body:{mid:'max-receipt'}}};
-  await assert.rejects(()=>bridge.outgoing(reply()));assert.equal(await store.get('sent-55'),'retry');await bridge.outgoing(reply());assert.equal(await store.get('sent-55'),'sent:max-receipt');
+  await assert.rejects(()=>bridge.outgoing(reply()));assert.equal(await store.get(keyOf(cfg,'sent-55')),'retry');await bridge.outgoing(reply());assert.equal(await store.get(keyOf(cfg,'sent-55')),'sent:max-receipt');
 });
 test('contact link reuses canonical source ID supplied by Chatwoot',async()=>{
   const cw=new Chatwoot(cfg);let created;

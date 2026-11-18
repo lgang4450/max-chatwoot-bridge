@@ -11,5 +11,5 @@ canonical contact inbox mapping, isolated persistent queue, dependency/image
 pins, CI, deployment and recovery documentation. Runtime implementation was
 reworked; generated JS/maps/declarations no longer live in src.
 
-The official @maxhub/max-bot-api SDK is MIT licensed; its LICENSE remains in
-node_modules and the distributed image. Other dependencies retain their notices.
+The official @maxhub/max-bot-api SDK is MIT licensed; its declarations are used only during compilation. The SDK runtime is no longer
+shipped or executed; bounded HTTP/upload replaces its debug and stream transport. Other dependencies retain their notices.

@@ -17,21 +17,21 @@ jobs:
         ports: [6379:6379]
         options: --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s --health-retries 5
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with: {node-version: '24.15.0', cache: npm}
       - run: npm ci --ignore-scripts
       - run: npm test
         env: {REDIS_TEST_URL: 'redis://127.0.0.1:6379'}
       - run: npm audit --omit=dev --audit-level=high
-      - run: cp .env.example .env && docker compose --env-file .env.example config --quiet
+      - run: cp .env.example .env && cp .gateway.env.example .gateway.env && docker compose --env-file .env.example config --quiet
   image:
     needs: verify
     if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
     runs-on: ubuntu-latest
-    permissions: {contents: write}
+    permissions: {contents: write, id-token: write, attestations: write}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Build, smoke test and publish immutable image archive
         env:
           GH_TOKEN: ${{ github.token }}
@@ -40,7 +40,7 @@ jobs:
           image="max-chatwoot-bridge:$GITHUB_SHA"
           docker build --label "org.opencontainers.image.source=https://github.com/$GITHUB_REPOSITORY" --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$image" .
           docker network create max-smoke
-          docker run -d --name max-smoke-redis --network max-smoke --network-alias redis redis:7.4.12-alpine
+          docker run -d --name max-smoke-redis --network max-smoke --network-alias redis redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
           docker run -d --name max-smoke-bridge --network max-smoke -e BRIDGE_ENABLED=false "$image"
           for i in $(seq 1 30); do
             if docker exec max-smoke-bridge node -e "fetch('http://localhost:3000/health').then(async r=>{const b=await r.json();process.exit(r.status===200&&b.mode==='prepared'?0:1)}).catch(()=>process.exit(1))"; then break; fi
@@ -50,13 +50,27 @@ jobs:
           docker exec max-smoke-bridge node -e "fetch('http://localhost:3000/ready').then(r=>process.exit(r.status===503?0:1))"
           docker save "$image" | gzip > image.tar.gz
           sha256sum image.tar.gz > SHA256SUMS
-          gh release create "build-$GITHUB_SHA" image.tar.gz SHA256SUMS --target "$GITHUB_SHA" --prerelease --title "TEST image $GITHUB_SHA" --notes 'CI-verified Linux amd64 image. Verify SHA256SUMS before docker load. Activate only with a moderated MAX bot.'
+      - name: Attest archive from this exact workflow/ref/commit
+        id: provenance
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: image.tar.gz
+      - name: Publish attested archive
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUNDLE_PATH: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          set -euo pipefail
+          cp "$BUNDLE_PATH" attestation.jsonl
+          gh release create "build-$GITHUB_SHA" image.tar.gz SHA256SUMS attestation.jsonl --target "$GITHUB_SHA" --prerelease --title "TEST image $GITHUB_SHA" --notes 'Verify the archive Sigstore attestation against the exact workflow, staging ref and commit before loading.'
+
 
   deploy_stand:
     needs: image
     if: github.ref == 'refs/heads/staging' && vars.STAND_DEPLOY_ENABLED == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    environment: max-test
     steps:
       - name: Deploy exact CI release through restricted SSH key
         env:
