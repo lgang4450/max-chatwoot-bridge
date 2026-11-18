@@ -13,14 +13,17 @@ async function main() {
     const bridge=new Bridge(cfg,redis);await bridge.validate();
     for(const direction of ['in','out'] as const) {
       const queue=new Queue('max-bridge-'+direction,{connection:{url:cfg.redisUrl,maxRetriesPerRequest:1},defaultJobOptions:{attempts:6,backoff:{type:'exponential',delay:3000},removeOnComplete:{age:7*86400,count:1000},removeOnFail:{age:30*86400,count:1000}}});
+      queue.on('error',()=>report('queue_unavailable'));
       queues.push(queue);
       const worker=new Worker(queue.name,async job=>direction==='in'?bridge.incoming(job.data):bridge.outgoing(job.data),{connection:{url:cfg.redisUrl},concurrency:1,limiter:{max:5,duration:1000}});
       worker.on('error',()=>report('worker_unavailable'));
       worker.on('failed',async(job)=>{
         report('job_failed');
+        try {
         if(direction==='out' && job && (await job.getState())==='failed') {
           try {await bridge.cw.note(job.data.conversation.id,'Ответ в MAX не подтверждён. Требуется проверка доставки; автоматическая повторная отправка остановлена.');}catch {report('operator_notice_failed');}
         }
+        } catch {report('failure_notice_failed');}
       });
       workers.push(worker);
     }
